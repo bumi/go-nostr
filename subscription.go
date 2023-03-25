@@ -4,12 +4,14 @@ import (
 	"context"
 	"strconv"
 	"sync"
+
+	"github.com/recws-org/recws"
 )
 
 type Subscription struct {
 	label   string
 	counter int
-	conn    *Connection
+	conn    *recws.RecConn
 	mutex   sync.Mutex
 
 	Relay             *Relay

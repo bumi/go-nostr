@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recws-org/recws"
 	s "github.com/SaveTheRbtz/generic-sync-map-go"
 	"github.com/gorilla/websocket"
 )
@@ -40,12 +41,12 @@ type Relay struct {
 	URL           string
 	RequestHeader http.Header // e.g. for origin header
 
-	Connection    *Connection
+	Connection    *recws.RecConn
 	subscriptions s.MapOf[string, *Subscription]
 
 	Challenges        chan string // NIP-42 Challenges
 	Notices           chan string
-	ConnectionError   error
+	Errors 			chan error
 	ConnectionContext context.Context // will be canceled when the connection closes
 
 	okCallbacks s.MapOf[string, func(bool, string)]
@@ -88,17 +89,17 @@ func (r *Relay) Connect(ctx context.Context) error {
 		defer cancel()
 	}
 
-	socket, _, err := websocket.DefaultDialer.DialContext(ctx, r.URL, r.RequestHeader)
-	if err != nil {
-		cancel()
-		return fmt.Errorf("error opening websocket to '%s': %w", r.URL, err)
+	ws := recws.RecConn{
+		KeepAliveTimeout: 10 * time.Second,
+		RecIntvlMin: 5 * time.Second,
 	}
-
+	ws.Dial(r.URL, r.RequestHeader)
+	
 	r.Challenges = make(chan string)
 	r.Notices = make(chan string)
+	r.Errors = make(chan error) 
 
-	conn := NewConnection(socket)
-	r.Connection = conn
+	r.Connection = &ws
 
 	// ping every 29 seconds
 	ticker := time.NewTicker(29 * time.Second)
@@ -107,7 +108,7 @@ func (r *Relay) Connect(ctx context.Context) error {
 		for {
 			select {
 			case <-ticker.C:
-				err := conn.socket.WriteMessage(websocket.PingMessage, nil)
+				err := ws.WriteMessage(websocket.PingMessage, nil)
 				if err != nil {
 					log.Printf("error writing ping: %v; closing websocket", err)
 					return
@@ -119,14 +120,16 @@ func (r *Relay) Connect(ctx context.Context) error {
 	// handling received messages
 	go func() {
 		for {
-			typ, message, err := conn.socket.ReadMessage()
+			typ, message, err := ws.ReadMessage()
 			if err != nil {
-				r.ConnectionError = err
-				break
+				go func() {
+					r.Errors <- err
+				}()
+				continue
 			}
-
+				
 			if typ == websocket.PingMessage {
-				conn.WriteMessage(websocket.PongMessage, nil)
+				ws.WriteMessage(websocket.PongMessage, nil)
 				continue
 			}
 
@@ -428,6 +431,6 @@ func (r *Relay) PrepareSubscription(ctx context.Context) *Subscription {
 	}
 }
 
-func (r *Relay) Close() error {
-	return r.Connection.Close()
+func (r *Relay) Close() {
+	r.Connection.Close()
 }
